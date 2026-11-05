@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MicroApp - Dividir cuentas</title>
+  <style>
+    :root { color-scheme: light; }
+    body { font-family: system-ui, Arial, sans-serif; margin: 20px; }
+    h1 { margin-top: 0; }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px; }
+    input, button, select { padding: 10px; border-radius: 10px; border: 1px solid #ddd; }
+    button { cursor: pointer; background: #111; color: white; border: none; }
+    button.secondary { background: #fff; color: #111; border: 1px solid #ddd; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; vertical-align: top; }
+    .muted { color: #666; }
+    .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #f4f4f4; margin: 4px 4px 0 0; }
+    .total { font-size: 1.1rem; font-weight: 700; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .right { display: flex; justify-content: flex-end; }
+    .small { font-size: 0.9rem; }
+    textarea { width: 100%; min-height: 90px; padding: 10px; border-radius: 10px; border: 1px solid #ddd; }
+  </style>
+</head>
+
+<body>
+  <h1>🧾 Dividir cuentas</h1>
+  <p class="muted small">
+    Añade tus amigos, registra cada cosa con su costo y marca quién la consumió.
+    La app calcula cuánto debe pagar cada persona.
+  </p>
+
+  <div class="grid">
+    <!-- PANEL AMIGOS -->
+    <section class="card">
+      <h2>👥 Amigos</h2>
+      <div class="row">
+        <input id="amigoInput" placeholder="Nombre (ej: Ana)" />
+        <button onclick="agregarAmigo()">+ Agregar</button>
+      </div>
+      <div id="amigosList" class="pillWrap" style="margin-top:10px;"></div>
+      <hr style="margin:14px 0; border:0; border-top:1px solid #eee;">
+      <div class="row">
+        <button class="secondary" onclick="exportar()">⬇️ Exportar (JSON)</button>
+        <button class="secondary" onclick="importar()">⬆️ Importar (JSON)</button>
+        <button class="secondary" onclick="reiniciar()">🧹 Reiniciar</button>
+      </div>
+      <p class="muted small" id="statusImport" style="margin-top:10px;"></p>
+      <textarea id="jsonBox" placeholder="Aquí puedes pegar el JSON para importar..." style="margin-top:12px; display:none;"></textarea>
+    </section>
+
+    <!-- PANEL ITEMS -->
+    <section class="card">
+      <h2>🛒 Ítems / Consumos</h2>
+
+      <div class="row" style="margin-bottom:10px;">
+        <input id="itemNombre" placeholder="Qué cuesta (ej: Pizza)" style="flex: 1; min-width: 220px;" />
+        <input id="itemCosto" type="number" step="0.01" min="0" placeholder="Costo (ej: 12.50)" style="width: 160px;" />
+      </div>
+
+      <div class="row" id="consumoChecks"></div>
+
+      <div class="row" style="margin-top:10px;">
+        <button onclick="agregarItem()">➕ Guardar ítem</button>
+      </div>
+
+      <hr style="margin:14px 0; border:0; border-top:1px solid #eee;">
+
+      <h3 style="margin-top:0;">📌 Lista de ítems</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Ítem</th>
+            <th>Costo</th>
+            <th>Consumido por</th>
+            <th class="right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="itemsBody"></tbody>
+      </table>
+      <p class="muted small">Tip: si un ítem no tiene nadie marcado, no se contará en el total.</p>
+    </section>
+
+    <!-- PANEL RESULTADOS -->
+    <section class="card" style="grid-column: 1 / -1;">
+      <h2>💸 Resultados</h2>
+      <div class="row">
+        <div>
+          <div class="muted small">Total de la cuenta (suma de ítems con al menos 1 consumidor):</div>
+          <div id="grandTotal" class="total">0.00</div>
+        </div>
+      </div>
+
+      <hr style="margin:14px 0; border:0; border-top:1px solid #eee;">
+
+      <h3 style="margin-top:0;">Cuánto debe pagar cada quien</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Amigo</th>
+            <th>Debe pagar</th>
+            <th class="muted small">Regla</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+    </section>
+  </div>
+
+<script>
+  // =========================
+  // Estado
+  // =========================
+  const state = {
+    amigos: [],
+    items: [] // { nombre, costo, consumidos: Set<int> }
+  };
+
+  // =========================
+  // Helpers
+  // =========================
+  const $ = (id) => document.getElementById(id);
+
+  function fmt(n){
+    const x = Number(n) || 0;
+    return x.toFixed(2);
+  }
+
+  function rebuildAmigosUI(){
+    const wrap = $("amigosList");
+    wrap.innerHTML = "";
+    state.amigos.forEach((a, idx) => {
+      const span = document.createElement("span");
+      span.className = "pill";
+      span.innerHTML = `${a} <button class="secondary" style="padding:2px 8px; margin-left:8px; border-radius:999px;"
+        onclick="eliminarAmigo(${idx})">✖</button>`;
+      wrap.appendChild(span);
+    });
+
+    // checks de consumo
+    const checks = $("consumoChecks");
+    checks.innerHTML = "";
+    if(state.amigos.length === 0){
+      checks.innerHTML = `<span class="muted small">Agrega amigos para habilitar el registro de consumo.</span>`;
+      return;
+    }
+    state.amigos.forEach((name, idx) => {
+      const label = document.createElement("label");
+      label.className = "pill";
+      label.style.cursor = "pointer";
+      label.style.userSelect = "none";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.style.marginRight = "8px";
+      cb.id = `consumo_${idx}`;
+
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(name));
+      checks.appendChild(label);
+    });
+
+    // recalcular UI de items y resultados
+    renderItems();
+    renderResultados();
+  }
+
+  function getConsumidoresSeleccionados(){
+    const consumidos = new Set();
+    state.amigos.forEach((name, idx) => {
+      const cb = document.getElementById(`consumo_${idx}`);
+      if(cb && cb.checked) consumidos.add(idx);
+    });
+    return consumidos;
+  }
+
+  // =========================
+  // CRUD Amigos
+  // =========================
+  function agregarAmigo(){
+    const input = $("amigoInput");
+    const nombre = (input.value || "").trim();
+    if(!nombre) return;
+
+    if(state.amigos.some(a => a.toLowerCase() === nombre.toLowerCase())){
+      alert("Ese amigo ya existe.");
+      return;
+    }
+
+    state.amigos.push(nombre);
+    input.value = "";
+    rebuildAmigosUI();
+  }
+
+  function eliminarAmigo(idx){
+    if(!confirm("¿Eliminar a este amigo? Los ítems se recalcularán.")) return;
+
+    state.amigos.splice(idx, 1);
+
+    // Ajustar consumidos de items
+    state.items = state.items.map(it => {
+      const nuevo = new Set();
+      for(const i of it.consumidos){
+        if(i === idx) continue;
+        nuevo.add(i > idx ? i - 1 : i);
+      }
+      return { ...it, consumidos: nuevo };
+    });
+
+    rebuildAmigosUI();
+  }
+
+  // =========================
+  // CRUD Items
+  // =========================
+  function agregarItem(){
+    if(state.amigos.length === 0){
+      alert("Primero agrega al menos un amigo.");
+      return;
+    }
+    const nombre = ($("itemNombre").value || "").trim();
+    const costo = parseFloat($("itemCosto").value);
+
+    if(!nombre){
+      alert("Ingresa el nombre de la cosa.");
+      return;
+    }
+    if(isNaN(costo) || costo < 0){
+      alert("Ingresa un costo válido.");
+      return;
+    }
+
+    const consumidos = getConsumidoresSeleccionados();
+
+    state.items.push({
+      nombre,
+      costo: costo,
+      consumidos
+    });
+
+    $("itemNombre").value = "";
+    $("itemCosto").value = "";
+
+    // desmarcar
+    state.amigos.forEach((_, idx) => {
+      const cb = document.getElementById(`consumo_${idx}`);
+      if(cb) cb.checked = false;
+    });
+
+    renderItems();
+    renderResultados();
+  }
+
+  function eliminarItem(i){
+    if(!confirm("¿Eliminar este ítem?")) return;
+    state.items.splice(i, 1);
+    renderItems();
+    renderResultados();
+  }
+
+  function renderItems(){
+    const tbody = $("itemsBody");
+    tbody.innerHTML = "";
+
+    if(state.items.length === 0){
+      tbody.innerHTML = `<tr><td colspan="4" class="muted small">Aún no hay ítems.</td></tr>`;
+      return;
+    }
+
+    state.items.forEach((it, i) => {
+      const tr = document.createElement("tr");
+
+      const consumNames = [...it.consumidos].map(idx => state.amigos[idx]).filter(Boolean);
+
+      tr.innerHTML = `
+        <td>${escapeHtml(it.nombre)}</td>
+        <td>${fmt(it.costo)}</td>
+        <td>${consumNames.length ? consumNames.join(", ") : '<span class="muted">Nadie</span>'}</td>
+        <td class="right">
+          <button class="secondary" onclick="eliminarItem(${i})">🗑️</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // =========================
+  // Cálculos
+  // =========================
+  function renderResultados(){
+    const resultBody = $("resultBody");
+    resultBody.innerHTML = "";
+
+    const totalPorPersona = new Array(state.amigos.length).fill(0);
+
+    let grandTotal = 0;
+
+    for(const it of state.items){
+      const num = it.consumidos.size;
+      if(num <= 0) continue;
+
+      const share = it.costo / num;
+      grandTotal += it.costo;
+
+      for(const idx of it.consumidos){
+        if(idx >= 0 && idx < totalPorPersona.length){
+          totalPorPersona[idx] += share;
+        }
+      }
+    }
+
+    $("grandTotal").textContent = fmt(grandTotal);
+
+    state.amigos.forEach((name, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(name)}</td>
+        <td><b>${fmt(totalPorPersona[idx])}</b></td>
+        <td class="muted small">Costo / (# consumieron)</td>
+      `;
+      resultBody.appendChild(tr);
+    });
+
+    if(state.amigos.length === 0){
+      resultBody.innerHTML = `<tr><td colspan="3" class="muted small">Agrega amigos para ver resultados.</td></tr>`;
+    }
+  }
+
+  // =========================
+  // Export/Import (JSON)
+  // =========================
+  function exportar(){
+    const data = {
+      amigos: state.amigos,
+      items: state.items.map(it => ({
+        nombre: it.nombre,
+        costo: it.costo,
+        consumidos: [...it.consumidos]
+      }))
+    };
+    const json = JSON.stringify(data, null, 2);
+    $("jsonBox").style.display = "block";
+    $("jsonBox").value = json;
+    $("statusImport").textContent = "✅ JSON generado. Copia y guarda este texto.";
+  }
+
+  function importar(){
+    $("jsonBox").style.display = "block";
+    const box = $("jsonBox");
+    const raw = box.value || "";
+    if(!raw.trim()){
+      alert("Pega el JSON en el cuadro antes de importar.");
+      return;
+    }
+    try{
+      const data = JSON.parse(raw);
+
+      state.amigos = Array.isArray(data.amigos) ? data.amigos : [];
+      state.items = Array.isArray(data.items) ? data.items.map(it => ({
+        nombre: it.nombre,
+        costo: Number(it.costo) || 0,
+        consumidos: new Set(Array.isArray(it.consumidos) ? it.consumidos : [])
+      })) : [];
+
+      $("statusImport").textContent = "✅ Importación lista.";
+      rebuildAmigosUI();
+      renderItems();
+      renderResultados();
+    }catch(e){
+      console.error(e);
+      alert("JSON inválido. Revisa el formato.");
+    }
+  }
+
+  function reiniciar(){
+    if(!confirm("¿Seguro que quieres reiniciar todo?")) return;
+    state.amigos = [];
+    state.items = [];
+    $("itemNombre").value = "";
+    $("itemCosto").value = "";
+    $("jsonBox").style.display = "none";
+    $("statusImport").textContent = "";
+    rebuildAmigosUI();
+    renderItems();
+    renderResultados();
+  }
+
+  // =========================
+  // XSS safety helper (simple)
+  // =========================
+  function escapeHtml(str){
+    return (str ?? "").toString()
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  // =========================
+  // Init
+  // =========================
+  rebuildAmigosUI();
+  renderItems();
+  renderResultados();
+</script>
+</body>
+</html>
